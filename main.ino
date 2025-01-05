@@ -16,8 +16,14 @@
 #define ON "ON"
 #define OFF "OFF"
 
+#define MODE_OFF "OFF"
+#define MODE_IDLE "IDLE"
+#define MODE_BOILER "BOILER"
+#define MODE_FLOOR "FLOOR"
+
 #define PIN_LED 2
 #define PIN_SERVO 14
+#define PIN_RELAY 33
 #define PIN_RELAY_A 25
 #define PIN_RELAY_B 26
 #define PIN_RELAY_C 27
@@ -37,6 +43,7 @@
 
 #define CHARACTERISTIC_MAIN_TMPA_UUID "9bf61fc0-f498-4a91-9077-f0997b9a25af"
 #define CHARACTERISTIC_MAIN_TMPB_UUID "0655d6c3-6e50-4c84-ab94-6903e1176b72"
+#define CHARACTERISTIC_MAIN_TMPC_UUID "1e21d6f5-ccb1-42a3-9773-52060d12f358"
 
 // WiFi
 #define CHARACTERISTIC_WIFI_SSID_UUID "9c298009-647c-4a4d-86f7-6cd0bf2ceac0"
@@ -54,13 +61,13 @@ PubSubClient mqtt(wifi);
 Servo servo;
 
 int myCount = 0;
-int maxCount = 4;
+int maxCount = 10;
 
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 
 int ledState = LOW;
-long ledInterval = 500;
+long ledInterval = 250;
 unsigned long ledCurrentMillis = 0;
 unsigned long ledPreviousMillis = 0;
 
@@ -72,7 +79,11 @@ unsigned long mqttCurrentMillis = 0;
 unsigned long mqttPreviousMillis = 0;
 unsigned long mqttInterval = 20000;
 
-String main_mode = OFF;
+unsigned long onlineCurrentMillis = 0;
+unsigned long onlinePreviousMillis = 0;
+unsigned long onlineInterval = 6000000;
+
+String main_mode = MODE_IDLE;
 
 String main_chna = OFF;
 String main_chnb = OFF;
@@ -80,6 +91,7 @@ String main_chnc = OFF;
 
 String main_tmpa = "0";
 String main_tmpb = "0";
+String main_tmpc = "0";
 
 String wifi_ssid = "myssid";
 String wifi_pass = "mypass";
@@ -91,7 +103,7 @@ String mqtt_pass = "mypass";
 
 void channel_handle(String name, String value, bool with_save = true) {
   if (with_save) {
-    Serial.print("System: ");
+    Serial.print("SYS: ");
     preferences_set("main", name, value);
   }
 
@@ -101,56 +113,60 @@ void channel_handle(String name, String value, bool with_save = true) {
   digitalWrite(pin_num, pin_val);
 }
 
-void servo_handle(String value) {
-  Serial.print("System: ");
+void servo_handle(String angle) {
+  Serial.print("SYS: ");
 
-  const uint angle = map(value.toInt(), 38, 85, 0, 180);
-  servo.write(angle);
+  const uint value = map(angle.toInt(), 0, 270, 500, 2500);
+  servo.writeMicroseconds(value);
 
   Serial.print("servo=");
-  Serial.println(angle);
+  Serial.print(angle);
+  Serial.print(" (");
+  Serial.print(value);
+  Serial.println(")");
 }
 
 void mode_handle() {
-  if (main_mode == OFF) {
-    Serial.println("System: Heater disabling...");
-
+  if (main_mode == MODE_OFF) {
+    Serial.println("SYS: Heater disabling...");
     channel_handle("chna", OFF);
-    delay(2000);
-
-    Serial.println("System: Heater disabled");
-  } else if (main_mode == "BOILER") {
-    Serial.println("System: Boiler enabling...");
-
+    Serial.println("SYS: Heater disabled");
+  }
+  
+  if (main_mode == MODE_IDLE) {
+    Serial.println("SYS: Idle enabling...");
     channel_handle("chna", OFF);
-    delay(2000);
-
+    delay(500);
     channel_handle("chnb", ON);
-    delay(2000);
-
+    delay(500);
     servo_handle(main_tmpa);
-    delay(2000);
-
+    delay(1000);
     channel_handle("chna", ON);
-    delay(2000);
-
-    Serial.println("System: Boiler enabled");
-  } else if (main_mode == "FLOOR") {
-    Serial.println("System: Floor enabling...");
-
+    Serial.println("SYS: Idle enabled");
+  }
+  
+  if (main_mode == MODE_BOILER) {
+    Serial.println("SYS: Boiler enabling...");
     channel_handle("chna", OFF);
-    delay(2000);
-
-    channel_handle("chnb", OFF);
-    delay(2000);
-
+    delay(500);
+    channel_handle("chnb", ON);
+    delay(500);
     servo_handle(main_tmpb);
-    delay(2000);
-
+    delay(1000);
     channel_handle("chna", ON);
-    delay(2000);
-
-    Serial.println("System: Floor enabled");
+    Serial.println("SYS: Boiler enabled");
+  }
+  
+  if (main_mode == MODE_FLOOR) {
+    Serial.println("SYS: Floor enabling...");
+    channel_handle("chna", OFF);
+    delay(500);
+    channel_handle("chnb", OFF);
+    delay(500);
+    servo_handle(main_tmpc);
+    delay(1000);
+    channel_handle("chna", ON);
+    Serial.println("SYS: Floor enabled");
   }
 }
 
@@ -169,12 +185,12 @@ void preferences_set(String section, String param, String value) {
 
 class ServerCallbacks: public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) {
-    Serial.println("Bluetooth: device connected");
+    Serial.println("BLE: device connected");
     deviceConnected = true;
   };
 
   void onDisconnect(BLEServer* pServer) {
-    Serial.println("Bluetooth: device disconnected");
+    Serial.println("BLE: device disconnected");
     deviceConnected = false;
 
     pServer->startAdvertising();
@@ -189,8 +205,29 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue();
 
     if (value.length() > 0) {
-      Serial.print("Bluetooth: ");
+      Serial.print("BLE: ");
       preferences_set(section, param, value);
+
+      if (param == "tmpa") {
+        main_tmpa = value;
+        if (main_mode == MODE_IDLE) {
+          servo_handle(main_tmpa);
+        }
+      }
+
+      if (param == "tmpb") {
+        main_tmpb = value;
+        if (main_mode == MODE_BOILER) {
+          servo_handle(main_tmpb);
+        }
+      }
+
+      if (param == "tmpc") {
+        main_tmpc = value;
+        if (main_mode == MODE_FLOOR) {
+          servo_handle(main_tmpc);
+        }
+      }
     }
   }
 
@@ -208,7 +245,7 @@ class CharacteristicMainBootCallbacks : public BLECharacteristicCallbacks {
     if (value.length() > 0) {
       value.toUpperCase();
       if (value == "Y") {
-        Serial.println("Bluetooth: rebooting...");
+        Serial.println("BLE: rebooting...");
         delay(1000);
         ESP.restart();
       }
@@ -221,7 +258,7 @@ class CharacteristicMainModeCallbacks : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue();
 
     if (value.length() > 0) {
-      Serial.print("Bluetooth: ");
+      Serial.print("BLE: ");
       preferences_set("main", "mode", value);
 
       main_mode = value;
@@ -238,20 +275,55 @@ void mqtt_callback(char* t, byte* p, unsigned int l) {
     value.concat((char)p[i]);
   }
 
-  if (topic == "Heater/mode/setValue") {
-    Serial.print("MQTT: ");
-    preferences_set("main", "mode", value);
-    mqtt.publish("Heater/mode/getValue", value.c_str(), true);
+  if (topic == "heater/boot/set") {
+    value.toUpperCase();
+    if (value == "Y") {
+      Serial.println("MQTT: rebooting...");
+      delay(1000);
+      ESP.restart();
+    }
   }
 
-  if (topic == "Heater/temperatureA/setValue") {
+  if (topic == "heater/mode/set") {
+    Serial.print("MQTT: ");
+    preferences_set("main", "mode", value);
+    mqtt.publish("heater/mode/get", value.c_str(), true);
+
+    main_mode = value;
+    mode_handle();
+  }
+
+  if (topic == "heater/temp/idle/set") {
     Serial.print("MQTT: ");
     preferences_set("main", "tmpa", value);
-    mqtt.publish("Heater/temperatureA/getValue", value.c_str(), true);
-  } else if (topic == "Heater/temperatureB/setValue") {
+    mqtt.publish("heater/temp/idle/get", value.c_str(), true);
+
+    main_tmpa = value;
+    if (main_mode == MODE_IDLE) {
+      servo_handle(main_tmpa);
+    }
+  }
+  
+  if (topic == "heater/temp/boiler/set") {
     Serial.print("MQTT: ");
     preferences_set("main", "tmpb", value);
-    mqtt.publish("Heater/temperatureB/getValue", value.c_str(), true);
+    mqtt.publish("heater/temp/boiler/get", value.c_str(), true);
+
+    main_tmpb = value;
+    if (main_mode == MODE_BOILER) {
+      servo_handle(main_tmpb);
+    }
+  }
+  
+  if (topic == "heater/temp/floor/set") {
+    Serial.print("MQTT: ");
+    preferences_set("main", "tmpc", value);
+    mqtt.publish("heater/temp/floor/get", value.c_str(), true);
+
+    main_tmpc = value;
+    if (main_mode == MODE_FLOOR) {
+      servo_handle(main_tmpc);
+    }
   }
 }
 
@@ -263,6 +335,7 @@ void setupPreferences() {
   main_chnc = preferences.getString("chnc", main_chnc);
   main_tmpa = preferences.getString("tmpa", main_tmpa);
   main_tmpb = preferences.getString("tmpb", main_tmpb);
+  main_tmpc = preferences.getString("tmpc", main_tmpc);
   preferences.end();
 
   preferences.begin("wifi", false);
@@ -324,6 +397,16 @@ void setupBluetooth() {
 #endif
   pCharacteristicMainTmpb->setCallbacks(new CharacteristicCallbacks("main", "tmpb"));
   pCharacteristicMainTmpb->setValue(main_tmpb);
+
+  BLECharacteristic *pCharacteristicMainTmpc = pServiceMain->createCharacteristic(
+    CHARACTERISTIC_MAIN_TMPC_UUID,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
+  );
+#ifdef BLE_SEC_ENABLE
+  pCharacteristicMainTmpc->setAccessPermissions(ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE_ENCRYPTED);
+#endif
+  pCharacteristicMainTmpc->setCallbacks(new CharacteristicCallbacks("main", "tmpc"));
+  pCharacteristicMainTmpc->setValue(main_tmpc);
 
   pServiceMain->start();
 
@@ -428,7 +511,7 @@ void setupWifi() {
   while (WiFi.status() != WL_CONNECTED && myCount < maxCount) {
     myCount++;
     Serial.print(".");
-    delay(500);
+    delay(100);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -462,6 +545,7 @@ void setup() {
 
   pinMode(PIN_LED, OUTPUT);
   pinMode(PIN_SERVO, OUTPUT);
+  pinMode(PIN_RELAY, OUTPUT);
   pinMode(PIN_RELAY_A, OUTPUT);
   pinMode(PIN_RELAY_B, OUTPUT);
   pinMode(PIN_RELAY_C, OUTPUT);
@@ -474,6 +558,8 @@ void setup() {
   channel_handle("chnb", main_chnb, false);
   channel_handle("chnc", main_chnc, false);
 
+  digitalWrite(PIN_RELAY, HIGH);
+
   mode_handle();
 
   setupBluetooth();
@@ -483,7 +569,7 @@ void setup() {
 
 void loop() {
   if (!WiFi.isConnected()) {
-    ledInterval = 500;
+    ledInterval = 250;
   } else if (!mqtt.connected()) {
     ledInterval = 1000;
   } else {
@@ -538,13 +624,17 @@ void loop() {
         Serial.print(" ");
         Serial.println(mqtt_user);
         // Once connected, publish an announcement...
-        mqtt.publish("Heater/mode/getValue", main_mode.c_str(), true);
-        mqtt.publish("Heater/temperatureA/getValue", main_tmpa.c_str(), true);
-        mqtt.publish("Heater/temperatureB/getValue", main_tmpb.c_str(), true);
+        mqtt.publish("heater/boot/get", "online", true);
+        mqtt.publish("heater/mode/get", main_mode.c_str(), true);
+        mqtt.publish("heater/temp/idle/get", main_tmpa.c_str(), true);
+        mqtt.publish("heater/temp/boiler/get", main_tmpb.c_str(), true);
+        mqtt.publish("heater/temp/floor/get", main_tmpc.c_str(), true);
         // ... and resubscribe
-        mqtt.subscribe("Heater/mode/setValue");
-        mqtt.subscribe("Heater/temperatureA/setValue");
-        mqtt.subscribe("Heater/temperatureB/setValue");
+        mqtt.subscribe("heater/boot/set");
+        mqtt.subscribe("heater/mode/set");
+        mqtt.subscribe("heater/temp/idle/set");
+        mqtt.subscribe("heater/temp/boiler/set");
+        mqtt.subscribe("heater/temp/floor/set");
       } else {
         Serial.print("MQTT: connection ");
         Serial.print(mqtt_host);
@@ -558,6 +648,13 @@ void loop() {
       }
 
       mqttPreviousMillis = mqttCurrentMillis;
+    }
+
+    onlineCurrentMillis = millis();
+    if (onlineCurrentMillis - onlinePreviousMillis >= onlineInterval) {
+      onlinePreviousMillis = onlineCurrentMillis;
+
+      mqtt.publish("heater/boot/get", "online", true);
     }
 
     mqtt.loop();
