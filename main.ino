@@ -22,11 +22,11 @@
 #define MODE_FLOOR "FLOOR"
 
 #define PIN_LED 2
-#define PIN_SERVO 14
-#define PIN_RELAY 33
-#define PIN_RELAY_A 25
-#define PIN_RELAY_B 26
-#define PIN_RELAY_C 27
+#define PIN_SERVO 16
+#define PIN_RELAY 27
+#define PIN_RELAY_A 26
+#define PIN_RELAY_B 25
+#define PIN_RELAY_C 33
 
 #define APP_NAME "uHeater"
 
